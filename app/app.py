@@ -1,12 +1,17 @@
 import os
+import re
 import pandas as pd
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import create_engine, text
-from config import DB_URI
-from db_operations import get_all_tweets
-from algo import cleaningData, training
 import kagglehub
+from config import DB_URI, BATCH_SIZE
+from db_operations import count_tweets, insert_tweets_batch
+from algo import cleaningData
+from model_scheduler import model_manager
+from utils import setup_logger
+
+# Configuration du logger
+logger = setup_logger(__name__)
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = DB_URI
@@ -14,90 +19,124 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
+def is_valid_tweet(text):
+    return bool(re.match(r'^[a-zA-Z0-9\s.,!?\'\"@#-]+$', str(text)))
+
 def download_and_process_kaggle_data():
-    path = kagglehub.dataset_download("kazanova/sentiment140")
-    print("Path to dataset files:", path)
-    csv_file = os.path.join(path, "training.1600000.processed.noemoticon.csv")
-    df = pd.read_csv(csv_file, encoding='latin-1', header=None)
-    df.columns = ['polarity', 'id', 'date', 'query', 'user', 'text']
-    
-    # Convertir les scores de polarité
-    df['positive'] = df['polarity'].apply(lambda x: 1 if x > 2 else 0)
-    df['negative'] = df['polarity'].apply(lambda x: 1 if x < 2 else 0)
-    
-    # Mélanger les données
-    df = df.sample(frac=1).reset_index(drop=True)
-    
-    # Insérer les données dans la base de données
-    engine = create_engine(DB_URI)
     try:
-        with engine.connect() as connection:
-            with connection.begin():  # Transaction explicite
-                for i, (_, row) in enumerate(df.iterrows()):
-                    query = text(
-                        """
-                        INSERT INTO tweets (text, positive, negative)
-                        VALUES (:text, :positive, :negative)
-                        """
-                    )
-                    connection.execute(query, text=row['text'], positive=row['positive'], negative=row['negative'])
-        print("Les données Kaggle ont été insérées avec succès dans la base de données.")
+        logger.info("Démarrage du téléchargement des données Kaggle")
+        path = kagglehub.dataset_download("kazanova/sentiment140")
+        csv_file = os.path.join(path, "training.1600000.processed.noemoticon.csv")
+        df = pd.read_csv(csv_file, encoding='latin-1', header=None)
+        df.columns = ['polarity', 'id', 'date', 'query', 'user', 'text']
+        
+        total_tweets = len(df)
+        logger.info(f"Nombre total de tweets téléchargés: {total_tweets}")
+        
+        # Filtrer les tweets valides
+        valid_mask = df['text'].apply(is_valid_tweet)
+        df_filtered = df[valid_mask].copy()
+        
+        rejected_tweets = total_tweets - len(df_filtered)
+        logger.info(f"Tweets rejetés (caractères spéciaux): {rejected_tweets}")
+        
+        # Préparation des données
+        df_filtered.loc[:, 'positive'] = df_filtered['polarity'].apply(lambda x: 1 if x > 2 else 0)
+        df_filtered.loc[:, 'negative'] = df_filtered['polarity'].apply(lambda x: 1 if x < 2 else 0)
+        df_filtered = df_filtered.sample(frac=1).reset_index(drop=True)
+        
+        batch_values = []
+        total_valid = len(df_filtered)
+        accepted_tweets = 0
+        
+        # Traitement par lots
+        for i, row in df_filtered.iterrows():
+            # Création d'un tuple avec les données
+            tweet_tuple = (str(row['text']), int(row['positive']), int(row['negative']))
+            batch_values.append(tweet_tuple)
+            
+            if len(batch_values) >= BATCH_SIZE or i == total_valid - 1:
+                if insert_tweets_batch(batch_values):
+                    accepted_tweets += len(batch_values)
+                    progress = ((i + 1) / total_valid) * 100
+                    if progress % 5 < (BATCH_SIZE / total_valid * 100):
+                        logger.info(f"Progression: {progress:.1f}% ({i + 1}/{total_valid} tweets insérés)")
+                batch_values = []
+
+        logger.info("\nRésumé final:")
+        logger.info(f"Total tweets initiaux: {total_tweets}")
+        logger.info(f"Tweets acceptés et insérés: {accepted_tweets}")
+        logger.info(f"Tweets rejetés: {rejected_tweets}")
+        return accepted_tweets > 0
     except Exception as e:
-        print(f"Erreur lors de l'insertion des données Kaggle : {e}")
+        logger.error(f"Erreur lors du traitement des données Kaggle: {e}")
+        return False
+
+def initialize_app():
+    try:
+        logger.info("Démarrage de l'initialisation de l'application...")
+        with app.app_context():
+            tweet_count = count_tweets()
+            if tweet_count == 0:
+                logger.info("Base de données vide. Démarrage du téléchargement des données...")
+                if not download_and_process_kaggle_data():
+                    logger.error("Échec de l'initialisation des données")
+                    return False
+
+            logger.info("Démarrage de l'entraînement initial des modèles...")
+            model_manager.retrain_models()
+            model_manager.start_scheduler()
+            logger.info("Initialisation de l'application terminée")
+            return True
+    except Exception as e:
+        logger.error(f"Erreur lors de l'initialisation de l'application: {e}")
+        return False
 
 @app.route('/analyse', methods=['POST'])
 def analyse():
-    if not request.is_json:
-        return jsonify({"error": "Invalid input, expected JSON"}), 400
+    try:
+        if not request.is_json:
+            return jsonify({"error": "Invalid input, expected JSON"}), 400
 
-    data = request.get_json()
-    tweets = data.get('tweets', [])
+        data = request.get_json()
+        tweets = data.get('tweets', [])
 
-    if not isinstance(tweets, list):
-        return jsonify({"error": "Invalid input, expected a list of tweets"}), 400
+        if not isinstance(tweets, list):
+            return jsonify({"error": "Invalid input, expected a list of tweets"}), 400
 
-    results = {}
-    for tweet in tweets:
-        if isinstance(tweet, str):
-            tweet_text = tweet
-        else:
-            continue  # Skip invalid entries
+        models = model_manager.get_models()
+        if not all(models.values()):
+            return jsonify({"error": "Models not ready. Please wait for training to complete."}), 503
 
-        # Logique d'analyse pour calculer le score positif et négatif
-        tweet_cleaned = cleaningData(tweet_text)
-        tweet_vectorized_positive = vectorizer_positive.transform([tweet_cleaned])
-        tweet_vectorized_negative = vectorizer_negative.transform([tweet_cleaned])
-        tweet_score_positive = model_positive.predict_proba(tweet_vectorized_positive)[0][1]
-        tweet_score_negative = model_negative.predict_proba(tweet_vectorized_negative)[0][1]
-        tweet_score = tweet_score_positive - tweet_score_negative
-        
-        # Normaliser le score entre -1 et 1
-        tweet_score = 2 * (tweet_score - 0.5)
-        results[tweet_text] = tweet_score
+        results = {}
+        for tweet in tweets:
+            if not isinstance(tweet, str):
+                continue
 
-    return jsonify(results)
+            tweet_cleaned = cleaningData(tweet)
+            tweet_vectorized_positive = models['vectorizer_positive'].transform([tweet_cleaned])
+            tweet_vectorized_negative = models['vectorizer_negative'].transform([tweet_cleaned])
+            
+            # Les predict_proba retournent déjà des probabilités entre 0 et 1
+            # [0][1] prend la probabilité de la classe positive (1)
+            positive_score = models['model_positive'].predict_proba(tweet_vectorized_positive)[0][1]
+            negative_score = models['model_negative'].predict_proba(tweet_vectorized_negative)[0][1]
+            
+            # Si positive_score est élevé (proche de 1) et negative_score est bas (proche de 0)
+            # alors tweet_score sera proche de 1
+            # Si positive_score est bas (proche de 0) et negative_score est élevé (proche de 1)
+            # alors tweet_score sera proche de -1
+            tweet_score = positive_score - negative_score
+
+            results[tweet] = tweet_score
+
+        return jsonify(results)
+    except Exception as e:
+        logger.error(f"Erreur lors de l'analyse des tweets: {e}")
+        return jsonify({"error": "Internal server error"}), 500
 
 if __name__ == '__main__':
-    with app.app_context():
-        # Récupérer les tweets, si aucun tweet n'est trouvé, lancer la fonction populate_db du fichier populate_db.py
-        try:
-            with db.engine.connect() as connection:
-                query = text('SELECT COUNT(*) FROM tweets')
-                result = connection.execute(query).fetchone()
-                if result[0] == 0:
-                    print("Aucun tweet trouvé dans la base de données. Téléchargement des données Kaggle...")
-                    download_and_process_kaggle_data()
-        except Exception as e:
-            print(f"Erreur lors de la vérification des tweets : {e}")
-
-        # Entraînement des modèles
-        data = get_all_tweets()
-        if not data:
-            print("Erreur: Aucun tweet trouvé pour l'entraînement.")
-        else:
-            global model_positive, vectorizer_positive, model_negative, vectorizer_negative
-            model_positive, vectorizer_positive = training(data)
-            model_negative, vectorizer_negative = training(data, positive=False)
-            print("Entraînement des modèles terminé.")
-
-    app.run(debug=True)
+    if initialize_app():
+        app.run(host='127.0.0.1', port=5000, debug=False)
+    else:
+        logger.error("L'application n'a pas pu démarrer à cause d'erreurs d'initialisation")

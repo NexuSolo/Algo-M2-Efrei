@@ -1,0 +1,43 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Docker/Python/Dockerfile
+    ports:
+      - "5000:5000"
+    depends_on:
+      - db
+    environment:
+      - DB_HOST=db
+      - FLASK_APP=app.py
+      - FLASK_ENV=development
+    volumes:
+      - ../app:/app/app
+      - ../log:/app/log:rw
+    networks:
+      - app-network
+    restart: always
+
+  db:
+    image: mysql:9.2.0
+    container_name: mysql_db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: tweets_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: userpassword
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./DataBase/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - app-network
+
+volumes:
+  db_data:
+
+networks:
+  app-network:
+    driver: bridge

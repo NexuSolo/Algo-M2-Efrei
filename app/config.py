@@ -3,7 +3,10 @@ import logging
 
 # Configuration de base
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_URI = 'mysql+pymysql://user:userpassword@127.0.0.1:3306/tweets_db'
+
+# Utilisation de la variable d'environnement DB_HOST avec fallback sur localhost
+DB_HOST = os.getenv('DB_HOST', '127.0.0.1')
+DB_URI = f'mysql+pymysql://user:userpassword@{DB_HOST}:3306/tweets_db'
 
 # Configuration du logging
 LOG_FILE = os.path.join(BASE_DIR, 'log', 'app.log')

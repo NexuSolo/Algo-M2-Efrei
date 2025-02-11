@@ -13,7 +13,7 @@ def training(data, positive = True):
     X = vectorizer.fit_transform(df['tweets_cleaned'])
     y = df['positive'] if positive else df['negative']
 
-    x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.15, random_state=50)
     model = LogisticRegression()
     model.fit(x_train, y_train)
 
@@ -29,5 +29,8 @@ def training(data, positive = True):
 
 def cleaningData(text):
     text = text.lower()
-    text = re.sub(r'[^\w\s]', '', text) # Supprimer les caractères spéciaux
+    text = re.sub(r'[^\w\s]', '', text)
+    words = text.split()
+    words = [word for word in words if not word.startswith('@')]
+    text = ' '.join(words)
     return text

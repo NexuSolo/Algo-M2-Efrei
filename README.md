@@ -53,7 +53,7 @@ Le fichier `config.py` contient toutes les configurations importantes du projet 
 Le projet utilise Docker pour faciliter le déploiement. Une seule commande suffit pour tout démarrer :
 
 ```bash
-cd Docker && docker compose up -d
+cd Docker && docker compose up
 ```
 
 Cette commande va :

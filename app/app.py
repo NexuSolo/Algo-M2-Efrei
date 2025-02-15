@@ -135,6 +135,45 @@ def analyse():
         logger.error(f"Erreur lors de l'analyse des tweets: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
+@app.route('/add', methods=['POST'])
+def add_tweet_in_database():
+    try:
+        if not request.is_json:
+            return jsonify({"error": "Invalid input, expected JSON"}), 400
+
+        data = request.get_json()
+        tweets = data.get('tweets', [])
+
+        if not isinstance(tweets, list):
+            return jsonify({"error": "Invalid input, expected a list of tweets"}), 400
+
+        for tweet in tweets:
+            if not isinstance(tweet, dict) or 'text' not in tweet or 'positive' not in tweet:
+                return jsonify({"error": "Invalid input, expected a list of tweets with 'text' and 'positive' fields"}), 400
+        
+        for tweet in tweets:
+            if not isinstance(tweet['positive'], bool):
+                return jsonify({"error": "Invalid input, 'positive' field must be a boolean"}), 400
+
+        for tweet in tweets:
+            if not isinstance(tweet['text'], str):
+                return jsonify({"error": "Invalid input, 'text' field must be a string"}), 400
+
+        batch_values = []
+        for tweet in tweets:
+            tweet_tuple = (tweet['text'], int(tweet['positive']), int(not tweet['positive']))
+            batch_values.append(tweet_tuple)
+        
+        if insert_tweets_batch(batch_values):
+            return jsonify({"success": "Tweets ajoutés avec succès"}), 201
+        else:
+            return jsonify({"error": "Erreur lors de l'ajout des tweets"}), 500
+    except Exception as e:
+        logger.error(f"Erreur lors de l'ajout des tweets: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+
 if __name__ == '__main__':
     if initialize_app():
         app.run(host='0.0.0.0', port=5000, debug=False)

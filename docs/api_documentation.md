@@ -11,59 +11,79 @@ http://127.0.0.1:5000
 
 ## Endpoints
 
-### Analyse de Sentiments
+### POST /analyse
 
-**Endpoint:** `/analyse`  
-**Méthode:** POST  
-**Content-Type:** application/json
+Analyse le sentiment des tweets fournis.
 
-#### Description
-Analyse le sentiment de un ou plusieurs tweets et retourne un score pour chacun.
-
-#### Corps de la Requête
+#### Request
+- Method: `POST`
+- Content-Type: `application/json`
+- Body:
 ```json
 {
     "tweets": [
-        "I love this new product!",
-        "This is terrible service"
+        "I like this product",
+        "I hate this service",
+        ...
     ]
 }
 ```
 
-#### Paramètres
-- `tweets` (array de strings): Liste des tweets à analyser
-
-#### Réponse
+#### Response
+- Content-Type: `application/json`
+- Body:
 ```json
 {
-    "I love this new product!": 0.7111955103717886,
-    "This is terrible service": -0.651521278220373
+    "I like this product": 0.8,
+    "I hate this service": -0.7
 }
 ```
 
-Le score retourné est compris entre -1 et 1 :
-- Proche de 1 : Sentiment très positif
-- Proche de 0 : Sentiment neutre
-- Proche de -1 : Sentiment très négatif
+Le score de sentiment varie de -1 (très négatif) à 1 (très positif).
 
-#### Codes de Statut
-- 200 : Succès
-- 400 : Format de requête invalide
-- 503 : Modèles en cours d'entraînement
-- 500 : Erreur interne du serveur
+#### Status Codes
+- `200`: Succès
+- `400`: Format de requête invalide
+- `503`: Modèles non disponibles
+- `500`: Erreur interne du serveur
 
-#### Exemple de Requête avec cURL
-```bash
-curl -X POST \
-  http://127.0.0.1:5000/analyse \
-  -H 'Content-Type: application/json' \
-  -d '{
+### POST /add
+
+Ajoute de nouveaux tweets dans la base de données.
+
+#### Request
+- Method: `POST`
+- Content-Type: `application/json`
+- Body:
+```json
+{
     "tweets": [
-        "I am really happy today!",
-        "This weather is awful"
+        {
+            "text": "I love this product",
+            "positive": true
+        },
+        {
+            "text": "This is terrible",
+            "positive": false
+        }
     ]
-}'
+}
 ```
+
+#### Response
+- Status: `201 Created`
+- Content-Type: `application/json`
+- Body:
+```json
+{
+    "success": "Tweets ajoutés avec succès"
+}
+```
+
+#### Status Codes
+- `201`: Tweets ajoutés avec succès
+- `400`: Format de requête invalide
+- `500`: Erreur interne du serveur
 
 ## Notes Techniques
 
